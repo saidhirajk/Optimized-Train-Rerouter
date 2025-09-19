@@ -1,78 +1,125 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import time
 
-# --- Input Data ---
-data = [
-    {"Train ID": "T1", "Type": "Passenger", "Priority": 3, "Arrival": "10:00", "Departure": "10:10"},
-    {"Train ID": "T2", "Type": "Express", "Priority": 2, "Arrival": "10:05", "Departure": "10:15"},
-    {"Train ID": "T3", "Type": "Freight", "Priority": 1, "Arrival": "10:07", "Departure": "10:20"}
+st.set_page_config(page_title="Railway Traffic Optimizer", layout="wide")
+st.title("OptiPravah - Optimized Train Tracking & Scheduling Platform")
+
+# --- Step 1: Define Train Data ---
+st.subheader("📋 Original Train Schedule")
+
+train_data = [
+    {"Train ID": "A", "Type": "Superfast", "Priority": 3, "Arrival": "10:00", "Halt": 5, "Platform": 1},
+    {"Train ID": "B", "Type": "Passenger", "Priority": 2, "Arrival": "10:10", "Halt": 15, "Platform": 1},
+    {"Train ID": "C", "Type": "Freight", "Priority": 1, "Arrival": "10:05", "Halt": 20, "Platform": 2},
+    {"Train ID": "D", "Type": "Local", "Priority": 2, "Arrival": "10:15", "Halt": 10, "Platform": 2}
 ]
-df = pd.DataFrame(data)
 
-st.title("🚆 Smart Train Scheduler (Prototype)")
+df = pd.DataFrame(train_data)
 
-# Show input table
-st.subheader("Train Schedule Input")
+# --- Step 2: Simulate Delay ---
+st.subheader("⚠️ Simulating Delay or Disruption")
+
+delayed_train = st.selectbox("Select train to delay", options=["None"] + df["Train ID"].tolist())
+delay_minutes = st.slider("Delay duration (minutes)", 0, 30, 10) if delayed_train != "None" else 0
+
+for i in range(len(df)):
+    if df.loc[i, "Train ID"] == delayed_train:
+        original_arrival = datetime.strptime(df.loc[i, "Arrival"], "%H:%M")
+        new_arrival = original_arrival + timedelta(minutes=delay_minutes)
+        df.loc[i, "Arrival"] = new_arrival.strftime("%H:%M")
+        df.loc[i, "Delay"] = delay_minutes
+    else:
+        df.loc[i, "Delay"] = 0
+
 st.dataframe(df)
 
-# Add disruption
-st.subheader("Disruption Simulator")
-delayed_train = st.selectbox("Select train to delay", df["Train ID"])
-delay_minutes = st.slider("Delay (minutes)", 0, 30, 5)
+# --- Step 3: Decision Logic ---
+st.subheader("Optimized Platform Assignment & Status")
 
-# Apply delay
-if delayed_train:
-    idx = df[df["Train ID"] == delayed_train].index[0]
-    arr_time = datetime.strptime(df.loc[idx, "Arrival"], "%H:%M")
-    dep_time = datetime.strptime(df.loc[idx, "Departure"], "%H:%M")
-    df.loc[idx, "Arrival"] = (arr_time + timedelta(minutes=delay_minutes)).strftime("%H:%M")
-    df.loc[idx, "Departure"] = (dep_time + timedelta(minutes=delay_minutes)).strftime("%H:%M")
+df["Arrival_dt"] = pd.to_datetime(df["Arrival"], format="%H:%M")
+df["Departure_dt"] = df["Arrival_dt"] + pd.to_timedelta(df["Halt"], unit="m")
 
-# Sort by priority + arrival time
-df_sorted = df.sort_values(by=["Priority", "Arrival"], ascending=[False, True])
+# Sort by priority first, then arrival time
+df_sorted = df.sort_values(by=["Priority", "Arrival_dt"], ascending=[False, True]).reset_index(drop=True)
 
-st.subheader("📋 Optimized Train Order")
-st.dataframe(df_sorted)
+platform_status = {1: [], 2: []}
+decision = []
 
-# KPI
-avg_delay = delay_minutes if delayed_train else 0
-st.metric("Average Delay (mins)", avg_delay)
-st.metric("Total Trains Processed", len(df))
+for i, row in df_sorted.iterrows():
+    plat = row["Platform"]
+    arrival = row["Arrival_dt"]
+    departure = row["Departure_dt"]
+    halt = row["Halt"]
+    priority = row["Priority"]
+    delay = row["Delay"]
 
-# --- Visualization ---
-st.subheader("🚦 Track Visualization")
+    can_arrive = True
+    override = False
 
-track_length = 20  # fixed track length for visualization
+    # Check for conflicts
+    for other in platform_status[plat]:
+        other_arrival, other_departure, other_priority = other
 
-# Define train colors
-def train_color(train_type):
-    if train_type == "Express":
-        return "green"
-    elif train_type == "Passenger":
-        return "blue"
+        # Conflict detected
+        if arrival < other_departure and departure > other_arrival:
+            can_arrive = False
+
+            # Delay-aware override logic
+            delay_gap = (other_departure - arrival).seconds // 60
+            if priority < other_priority and halt <= delay_gap:
+                override = True
+            break
+
+    if can_arrive or override:
+        platform_status[plat].append((arrival, departure, priority))
+        decision.append({
+            "Train ID": row["Train ID"],
+            "Type": row["Type"],
+            "Priority": priority,
+            "Arrival": row["Arrival"],
+            "Halt": halt,
+            "Delay": delay,
+            "Platform": plat,
+            "Decision": "✅ Proceed",
+            "Status": "🟢 Can Arrive at Platform"
+        })
     else:
-        return "orange"
+        decision.append({
+            "Train ID": row["Train ID"],
+            "Type": row["Type"],
+            "Priority": priority,
+            "Arrival": row["Arrival"],
+            "Halt": halt,
+            "Delay": delay,
+            "Platform": plat,
+            "Decision": "⏳ Wait",
+            "Status": "🔴 Cannot Arrive – Platform Occupied"
+        })
 
-# Animation container
-placeholder = st.empty()
+df_final = pd.DataFrame(decision)
+st.dataframe(df_final)
 
-animate = st.checkbox("Enable Animation", value=True)
+# --- Step 4: KPIs ---
+st.subheader("📈 KPIs")
 
-if animate:
-    for step in range(track_length):
-        with placeholder.container():
-            for _, row in df_sorted.iterrows():
-                color = train_color(row["Type"])
-                position = "⬛" * step + f"<span style='background-color:{color};padding:4px 10px;border-radius:5px;color:white'>{row['Train ID']}</span>"
-                st.markdown(position, unsafe_allow_html=True)
-            time.sleep(0.3)  # control animation speed
-else:
-    # Static blocks
-    for _, row in df_sorted.iterrows():
-        color = train_color(row["Type"])
-        st.markdown(
-            f"<div style='padding:10px;background-color:{color};margin:5px;border-radius:5px;color:white'>{row['Train ID']} ({row['Type']})</div>",
-            unsafe_allow_html=True,
-        )
+avg_delay = df_final["Delay"].mean()
+total_trains = len(df_final)
+proceeding = df_final[df_final["Decision"] == "✅ Proceed"].shape[0]
+waiting = df_final[df_final["Decision"] == "⏳ Wait"].shape[0]
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("🚉 Total Trains", total_trains)
+col2.metric("✅ Proceeding", proceeding)
+col3.metric("⏳ Waiting", waiting)
+col4.metric("📊 Avg Delay", f"{avg_delay:.1f} min")
+
+# --- Footer ---
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; font-size: 14px; color: gray;'>"
+    "© Original Work by <b>Saidhiraj</b> – Conceptualized, Designed, and Simulated for SIH 2025."
+    "</div>",
+    unsafe_allow_html=True
+)
+
